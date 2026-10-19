@@ -13,6 +13,7 @@ import { Button } from '@/components/ui/Button';
 import { Input } from '@/components/ui/Input';
 import { Badge } from '@/components/ui/Badge';
 import { Skeleton } from '@/components/ui/skeleton';
+import { hasAnalyzableInput } from '@/lib/utils';
 import {
   Upload,
   ExternalLink,
@@ -226,7 +227,7 @@ export default function ProfilePage() {
   const handleAnalyze = async () => {
     if (!validateLinks()) return;
     const hasAnyLink = Object.values(links).some((v) => v.trim());
-    if (!hasAnyLink && !resumeFileName) {
+    if (!hasAnalyzableInput(links, resumeFileName)) {
       toast({
         title: 'Nothing to analyze',
         description: 'Add at least one profile link or import a resume first.',
@@ -237,7 +238,9 @@ export default function ProfilePage() {
 
     setAnalyzing(true);
     try {
-      await apiPost('/api/session/preferences', { links });
+      if (hasAnyLink) {
+        await apiPost('/api/session/preferences', { links });
+      }
       const response = (await apiPost('/api/analyze', {})) as {
         engine?: string;
         warnings?: Array<{ source: string; reason: string }>;
@@ -275,6 +278,7 @@ export default function ProfilePage() {
   }
 
   const hasAnyLink = Object.values(links).some((v) => v.trim());
+  const canAnalyze = hasAnalyzableInput(links, resumeFileName);
   const completedLinks = Object.values(links).filter((v) => v.trim()).length;
 
   return (
@@ -286,7 +290,7 @@ export default function ProfilePage() {
             Connect your professional profiles and resume for analysis.
           </p>
         </div>
-        <Button onClick={handleAnalyze} disabled={!hasAnyLink || saving || analyzing} className="flex items-center gap-2">
+        <Button onClick={handleAnalyze} disabled={!canAnalyze || saving || analyzing} className="flex items-center gap-2">
           <Sparkles className={`h-4 w-4 ${analyzing ? 'animate-spin' : ''}`} />
           {analyzing ? 'Analyzing...' : 'Save & Analyze'}
         </Button>
