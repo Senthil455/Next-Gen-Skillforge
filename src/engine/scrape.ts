@@ -1,4 +1,5 @@
 import type { SocialLinks } from '../types';
+import { assertPublicHttpUrl, readTextCapped, safeFetch } from './safe-fetch';
 
 export interface ScrapedSource {
   source: string;
@@ -19,14 +20,15 @@ const SCRAPE_HEADERS = {
 };
 
 const FETCH_TIMEOUT_MS = 9000;
+const MAX_HTML_BYTES = 1_200_000;
 
 async function fetchWithTimeout(url: string, init: RequestInit = {}): Promise<Response> {
-  return fetch(url, {
-    ...init,
-    headers: { ...SCRAPE_HEADERS, ...(init.headers ?? {}) },
-    redirect: 'follow',
-    signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
-  });
+  const { response } = await safeFetch(
+    url,
+    { ...init, headers: { ...SCRAPE_HEADERS, ...(init.headers ?? {}) } },
+    { timeoutMs: FETCH_TIMEOUT_MS },
+  );
+  return response;
 }
 
 export function stripHtml(html: string): string {
@@ -49,10 +51,14 @@ function extractTitle(html: string): string {
   return extractMeta(html, /<title[^>]*>([\s\S]*?)<\/title>/i);
 }
 
-export function usernameFromUrl(url: string, hostSuffix?: string): string | null {
+export function usernameFromUrl(url: string, expectedHost?: string): string | null {
   try {
     const parsed = new URL(url);
-    if (hostSuffix && !parsed.hostname.endsWith(hostSuffix)) return null;
+    if (expectedHost) {
+      const host = parsed.hostname.toLowerCase().replace(/\.$/, '');
+      const target = expectedHost.toLowerCase();
+      if (host !== target && host !== `www.${target}`) return null;
+    }
     const segment = parsed.pathname.split('/').filter(Boolean)[0];
     return segment || null;
   } catch {
@@ -60,9 +66,15 @@ export function usernameFromUrl(url: string, hostSuffix?: string): string | null
   }
 }
 
+function assertUsername(username: string | null, pattern: RegExp, source: string): string {
+  if (!username || !pattern.test(username)) {
+    throw new Error(`Invalid ${source} profile URL`);
+  }
+  return username;
+}
+
 async function scrapeGitHub(url: string): Promise<ScrapedSource> {
-  const username = usernameFromUrl(url, 'github.com');
-  if (!username) throw new Error('Not a GitHub profile URL');
+  const username = assertUsername(usernameFromUrl(url, 'github.com'), /^[a-zA-Z0-9-]{1,39}$/, 'GitHub');
 
   const profileResp = await fetchWithTimeout(`https://api.github.com/users/${encodeURIComponent(username)}`);
   if (!profileResp.ok) throw new Error(`GitHub profile fetch failed (${profileResp.status})`);
@@ -110,8 +122,7 @@ async function scrapeGitHub(url: string): Promise<ScrapedSource> {
 }
 
 async function scrapeDevTo(url: string): Promise<ScrapedSource> {
-  const username = usernameFromUrl(url, 'dev.to');
-  if (!username) throw new Error('Not a Dev.to profile URL');
+  const username = assertUsername(usernameFromUrl(url, 'dev.to'), /^[a-zA-Z0-9_-]{1,64}$/, 'Dev.to');
 
   const response = await fetchWithTimeout(`https://dev.to/api/articles?username=${encodeURIComponent(username)}&per_page=20`);
   if (!response.ok) throw new Error(`Dev.to fetch failed (${response.status})`);
@@ -134,7 +145,17 @@ async function scrapeDevTo(url: string): Promise<ScrapedSource> {
 async function scrapeGeneric(url: string, source: string): Promise<ScrapedSource> {
   const response = await fetchWithTimeout(url);
   if (!response.ok) throw new Error(`Fetch failed (${response.status})`);
-  const html = await response.text();
+
+  const contentType = (response.headers.get('content-type') ?? '').split(';')[0].trim().toLowerCase();
+  const readable = !contentType
+    || contentType.startsWith('text/')
+    || contentType.includes('json')
+    || contentType.includes('xml');
+  if (!readable) {
+    throw new Error(`Unsupported content type (${contentType || 'unknown'})`);
+  }
+
+  const html = await readTextCapped(response, MAX_HTML_BYTES);
 
   const title = extractTitle(html);
   const description = extractMeta(html, /<meta[^>]+name=["']description["'][^>]+content=["']([^"']*)["']/i)
@@ -204,6 +225,17 @@ export async function collectSources(
   if (links.resume) genericLinks.push({ url: links.resume, source: 'resume-url' });
 
   for (const link of genericLinks) {
+    try {
+      assertPublicHttpUrl(link.url);
+    } catch (error) {
+      warnings.push({
+        source: link.source,
+        url: link.url,
+        reason: error instanceof Error ? error.message : 'Unsupported URL',
+      });
+      continue;
+    }
+
     tasks.push(
       scrapeGeneric(link.url, link.source)
         .then((source) => { sources.push(source); })
