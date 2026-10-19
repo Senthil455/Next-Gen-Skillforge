@@ -43,6 +43,33 @@ export function sanitizeLinks(input: unknown): Partial<SocialLinks> {
   return normalizedLinks;
 }
 
+export interface LinkUpdates {
+  set: Partial<SocialLinks>;
+  remove: Array<keyof SocialLinks>;
+}
+
+export function sanitizeLinkUpdates(input: unknown): LinkUpdates {
+  if (!input || typeof input !== 'object') return { set: {}, remove: [] };
+
+  const updates: LinkUpdates = { set: {}, remove: [] };
+  for (const key of LINK_KEYS) {
+    if (!Object.prototype.hasOwnProperty.call(input, key)) continue;
+    const value = (input as Record<string, unknown>)[key];
+
+    if (value === null || (typeof value === 'string' && !value.trim())) {
+      updates.remove.push(key);
+      continue;
+    }
+
+    if (typeof value === 'string') {
+      const sanitized = sanitizeLinkValue(value);
+      if (sanitized) updates.set[key] = sanitized;
+    }
+  }
+
+  return updates;
+}
+
 app.get('/', async (c) => {
   const session = c.get('session');
   return c.json({
@@ -64,29 +91,35 @@ app.post('/', async (c) => {
 
   const payload = (body ?? {}) as Record<string, unknown>;
   const theme = sanitizeTheme(payload.theme);
-  const links = sanitizeLinks(payload.links);
+  const { set: linkUpdates, remove: removedLinks } = sanitizeLinkUpdates(payload.links);
+  const hasLinkUpdates = Object.keys(linkUpdates).length > 0 || removedLinks.length > 0;
 
-  const hasLinks = Object.keys(links).length > 0;
   const hasTheme = typeof theme !== 'undefined';
 
-  if (!hasTheme && !hasLinks) {
+  if (!hasTheme && !hasLinkUpdates) {
     return c.json({ error: 'No valid preference values provided in payload.' }, 400);
   }
 
   const session = c.get('session');
   const previousPreferences = session.preferences ?? {};
 
-  const nextLinks = hasLinks ? { ...previousPreferences.links, ...links } : previousPreferences.links;
+  const nextLinks: Partial<SocialLinks> = { ...(previousPreferences.links ?? {}) };
+  if (hasLinkUpdates) {
+    Object.assign(nextLinks, linkUpdates);
+    for (const key of removedLinks) {
+      delete nextLinks[key];
+    }
+  }
 
   session.preferences = {
     ...previousPreferences,
     ...(hasTheme ? { theme } : {}),
-    ...(hasLinks ? { links: nextLinks } : {}),
+    ...(hasLinkUpdates ? { links: nextLinks } : {}),
   };
 
   // Changing links invalidates any stored analysis (signature mismatch).
   const hadAnalysis = Boolean(session.analysis);
-  if (hasLinks && session.analysis) {
+  if (hasLinkUpdates && session.analysis) {
     delete session.analysis;
   }
 
@@ -96,7 +129,8 @@ app.post('/', async (c) => {
     {
       ok: true,
       preferences: session.preferences,
-      analysisCleared: hasLinks && hadAnalysis,
+      analysisCleared: hasLinkUpdates && hadAnalysis,
+      removed: removedLinks,
     },
     { headers: { 'Set-Cookie': makeSessionCookie(cookieValue, c.get('secure')) } },
   );

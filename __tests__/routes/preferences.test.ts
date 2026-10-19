@@ -3,6 +3,7 @@ import {
   sanitizeTheme,
   sanitizeLinkValue,
   sanitizeLinks,
+  sanitizeLinkUpdates,
 } from '../../src/routes/preferences';
 
 describe('sanitizeTheme', () => {
@@ -40,6 +41,44 @@ describe('sanitizeLinkValue', () => {
 
   it('rejects invalid URLs', () => {
     expect(sanitizeLinkValue('not-a-url')).toBeUndefined();
+  });
+});
+
+describe('sanitizeLinkUpdates', () => {
+  it('returns empty updates for non-object input', () => {
+    expect(sanitizeLinkUpdates(null)).toEqual({ set: {}, remove: [] });
+    expect(sanitizeLinkUpdates('string')).toEqual({ set: {}, remove: [] });
+  });
+
+  it('marks empty and null values for removal', () => {
+    const result = sanitizeLinkUpdates({ github: '', linkedin: '   ', twitter: null });
+    expect(result.set).toEqual({});
+    expect(result.remove).toEqual(['github', 'linkedin', 'twitter']);
+  });
+
+  it('ignores keys that were not sent', () => {
+    const result = sanitizeLinkUpdates({ github: 'https://github.com/user' });
+    expect(result.set).toEqual({ github: 'https://github.com/user' });
+    expect(result.remove).toEqual([]);
+  });
+
+  it('drops invalid non-empty values without removing them', () => {
+    const result = sanitizeLinkUpdates({ github: 'not-a-url', devto: 'https://dev.to/user' });
+    expect(result.set).toEqual({ devto: 'https://dev.to/user' });
+    expect(result.remove).toEqual([]);
+  });
+
+  it('sets valid links and removes cleared ones in one payload', () => {
+    const result = sanitizeLinkUpdates({
+      github: 'https://github.com/user',
+      linkedin: '',
+      portfolio: 'https://portfolio.dev',
+    });
+    expect(result.set).toEqual({
+      portfolio: 'https://portfolio.dev/',
+      github: 'https://github.com/user',
+    });
+    expect(result.remove).toEqual(['linkedin']);
   });
 });
 

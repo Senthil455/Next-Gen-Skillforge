@@ -19,9 +19,9 @@ import {
   Github,
   Linkedin,
   BookOpen,
-  AlertCircle,
   CheckCircle,
   Sparkles,
+  X,
 } from 'lucide-react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
@@ -87,6 +87,7 @@ export default function ProfilePage() {
   const [analyzing, setAnalyzing] = useState(false);
   const [uploading, setUploading] = useState(false);
   const [links, setLinks] = useState<SocialLinks>({ ...EMPTY_LINKS });
+  const [savedLinks, setSavedLinks] = useState<SocialLinks>({ ...EMPTY_LINKS });
   const [errors, setErrors] = useState<Partial<Record<keyof SocialLinks, string>>>({});
   const [resumeFileName, setResumeFileName] = useState('');
   const resumeFileInputRef = useRef<HTMLInputElement | null>(null);
@@ -99,7 +100,9 @@ export default function ProfilePage() {
         resumeFileName?: string | null;
       };
       if (data.links) {
-        setLinks({ ...EMPTY_LINKS, ...data.links });
+        const nextLinks = { ...EMPTY_LINKS, ...data.links };
+        setLinks(nextLinks);
+        setSavedLinks(nextLinks);
       }
       if (data.resumeFileName) {
         setResumeFileName(data.resumeFileName);
@@ -147,6 +150,10 @@ export default function ProfilePage() {
     }
   };
 
+  const hasLinkChanges = LINK_FIELDS.some(
+    (field) => links[field.key].trim() !== savedLinks[field.key].trim(),
+  );
+
   const handleSave = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!validateLinks()) {
@@ -159,7 +166,7 @@ export default function ProfilePage() {
     }
 
     const hasLinks = Object.values(links).some((v) => v.trim());
-    if (!hasLinks) {
+    if (!hasLinks && !hasLinkChanges) {
       toast({
         title: 'No links provided',
         description: 'Add at least one profile link to continue.',
@@ -170,7 +177,12 @@ export default function ProfilePage() {
 
     setSaving(true);
     try {
-      await apiPost('/api/session/preferences', { links });
+      const response = (await apiPost('/api/session/preferences', { links })) as {
+        preferences?: { links?: Partial<SocialLinks> };
+      };
+      const persisted = { ...EMPTY_LINKS, ...(response.preferences?.links ?? {}) };
+      setLinks(persisted);
+      setSavedLinks(persisted);
       toast({
         title: 'Profile links saved',
         variant: 'success',
@@ -356,13 +368,17 @@ export default function ProfilePage() {
                         />
                       )}
                       {error && (
+                        <p className="mt-1 text-xs text-destructive">{error}</p>
+                      )}
+                      {(links[field.key].trim() || error) && (
                         <button
                           type="button"
                           onClick={() => handleDeleteLink(field.key)}
-                          className="mt-1 p-1.5 text-destructive hover:bg-destructive/10 rounded"
-                          aria-label="Clear field"
+                          className="self-start rounded p-1 text-muted-foreground transition-colors hover:bg-destructive/10 hover:text-destructive"
+                          aria-label={`Clear ${field.label}`}
+                          title={`Clear ${field.label}`}
                         >
-                          <AlertCircle className="h-4 w-4" />
+                          <X className="h-3.5 w-3.5" />
                         </button>
                       )}
                     </div>
@@ -398,7 +414,7 @@ export default function ProfilePage() {
           <p className="text-sm text-muted-foreground">
             Links are saved to your browser session and used for analysis.
           </p>
-          <Button type="submit" disabled={saving || !hasAnyLink}>
+          <Button type="submit" disabled={saving || (!hasAnyLink && !hasLinkChanges)}>
             {saving ? 'Saving...' : 'Save Profile Links'}
           </Button>
         </div>
